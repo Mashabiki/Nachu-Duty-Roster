@@ -558,30 +558,28 @@ window.onload = function () {
     return label;
   }
 
-  // Helper: Create subject-teacher dropdown with pre-selection
-  function createSubjectDropdown(subj) {
-    const sel = document.createElement('select');
-    const assignedTid = assignments?.[grade]?.[subj];
-    sel.id = `${wizard ? 'wiz-' : ''}g${grade}-${subj}`;
-    sel.style.margin = '5px 0';
-    sel.style.padding = '6px';
-    sel.style.width = '100%';
-    sel.style.borderRadius = '4px';
-    sel.style.border = '1px solid #ccc';
-    sel.style.backgroundColor = '#fefefe';
+ function createSubjectDropdown(subj) {
+  const sel = document.createElement('select');
+  const assignedTid = assignments?.[grade]?.[subj];
+  sel.id = `${wizard ? 'wiz-' : ''}g${grade}-${subj}`;
+  sel.style.margin = '5px 0';
+  sel.style.padding = '6px';
+  sel.style.width = '100%';
+  sel.style.borderRadius = '4px';
+  sel.style.border = '1px solid #ccc';
+  sel.style.backgroundColor = '#fefefe';
 
-    sel.innerHTML = '<option disabled>Select teacher</option>' +
-      teachers.map(t => 
-        `<option value="${t.id}" ${assignedTid == t.id ? 'selected' : ''}>
-          ${subj} - ${t.name} (T${t.id})
-        </option>`
-      ).join('');
+  // First option now includes the subject name
+  sel.innerHTML = `<option value="" disabled ${!assignedTid ? 'selected' : ''}>Select teacher for ${subj}</option>` +
+    teachers.map(t =>
+      `<option value="${t.id}" ${assignedTid == t.id ? 'selected' : ''}>
+        ${subj} - ${t.name} (T${t.id})
+      </option>`
+    ).join('');
 
-    // If no match was found and nothing is selected, set placeholder as selected
-    if (!assignedTid) sel.selectedIndex = 0;
+  return sel;
+}
 
-    return sel;
-  }
 
   // Subject groups with color and section titles
   const categories = [
@@ -687,7 +685,9 @@ function generateSchedule(grade) {
   if (!assign) return null;
 
   const mathPeriodsOnly = [0, 1, 3, 4]; // 8:00–12:55 periods
-  const allowedPeriodsFor = (subj) => subj === 'Maths' ? mathPeriodsOnly : null;
+  const allowedPeriodsFor = (subj) => subj === 'Mathematics' ? mathPeriodsOnly : null;
+
+  const doubleLessonSubjects = ['Mathematics', 'Biology', 'Chemistry', 'Physics', 'General Science', 'Computer'];
 
   const allSubjectGroups = [
     { subjects: subjects.sixPerWeek || [], count: 6 },
@@ -701,27 +701,23 @@ function generateSchedule(grade) {
 
   allSubjectGroups.forEach(({ subjects, count }) => {
     subjects.forEach(subj => {
-      if (assign[subj]) {
+      if (assign[subj] && subj !== 'PPI') {
         assignedSubjects.push(subj);
         allSubjectsPerWeek[subj] = count;
       }
     });
   });
 
-// Initialize schedule
-days.forEach(day => {
-  schedule[day] = Array(periods.length).fill('');
-});
+  days.forEach(day => {
+    schedule[day] = Array(periods.length).fill('');
+  });
 
-// Hardcode PPI first lesson on Friday
-if (assign['PPI']) {
-  const tid = assign['PPI'];
-  schedule['Fri'][0] = `PPI (T${tid})`;
-  occupy(tid, 'Fri', 1); // Occupy period 1 (index 0 + 1)
-}
+  if (assign['PPI']) {
+    const tid = assign['PPI'];
+    schedule['Fri'][0] = `PPI (T${tid})`;
+    occupy(tid, 'Fri', 1);
+  }
 
-
-  // Reserve Breaks, Lunch, Games
   periods.forEach((label, i) => {
     if (label === 'Break' || label === 'Lunch' || label === 'Games') {
       days.forEach(day => schedule[day][i] = label);
@@ -753,14 +749,61 @@ if (assign['PPI']) {
     return options.sort(() => Math.random() - 0.5)[0] || null;
   }
 
+function findDoubleFreeSlot(tid, subj) {
+    doubleLessonTimeGroups[subj] ??= new Set();
+    const shuffledDays = [...days];
+    shuffleArray(shuffledDays);
+
+    for (let day of shuffledDays) {
+      if (doubleLessonDays.has(day)) continue;
+      const periodPairs = [...Array(periods.length - 1).keys()];
+      shuffleArray(periodPairs);
+
+      for (let p of periodPairs) {
+        const group = timeGroup(p);
+        if (doubleLessonTimeGroups[subj].has(group)) continue;
+
+        if (
+          !schedule[day][p] &&
+          !schedule[day][p + 1] &&
+          !['Break', 'Lunch', 'Games'].includes(periods[p]) &&
+          !['Break', 'Lunch', 'Games'].includes(periods[p + 1]) &&
+          isFree(tid, day, p + 1) &&
+          isFree(tid, day, p + 2)
+        ) {
+          doubleLessonTimeGroups[subj].add(group);
+          return { day, period: p };
+        }
+      }
+    }
+
+    return null;
+  }
+
   const subjectPlacedCount = {};
   assignedSubjects.forEach(s => subjectPlacedCount[s] = 0);
 
-  // STEP 1: Initial placement by frequency
+  doubleLessonSubjects.forEach(subj => {
+    if (assign[subj]) {
+      const tid = assign[subj];
+      const allowed = allowedPeriodsFor(subj);
+      const slot = findDoubleLessonSlot(tid, subj, allowed);
+      if (slot) {
+        schedule[slot.day][slot.period] = `${subj} (T${tid})`;
+        schedule[slot.day][slot.period + 1] = `${subj} (T${tid})`;
+        occupy(tid, slot.day, slot.period + 1);
+        occupy(tid, slot.day, slot.period + 2);
+        subjectPlacedCount[subj] = (subjectPlacedCount[subj] || 0) + 2;
+      } else {
+        console.warn(`No double lesson slot found for ${subj} in ${grade}`);
+      }
+    }
+  });
+
   for (let subj of assignedSubjects) {
     const tid = assign[subj];
     const avoid = {};
-    let count = 0;
+    let count = subjectPlacedCount[subj] || 0;
     const required = allSubjectsPerWeek[subj];
     while (count < required) {
       const slot = findFreeSlotAvoidingPattern(tid, subj, avoid, allowedPeriodsFor(subj));
@@ -774,7 +817,6 @@ if (assign['PPI']) {
     }
   }
 
-  // STEP 2: Fill remaining empty slots with under-assigned subjects
   for (let day of days) {
     for (let p of lessonSlots) {
       if (!schedule[day][p]) {
@@ -799,7 +841,6 @@ if (assign['PPI']) {
     }
   }
 
-  // STEP 3: Final fill pass (less strict)
   for (let day of days) {
     for (let p of lessonSlots) {
       if (!schedule[day][p]) {
@@ -822,7 +863,6 @@ if (assign['PPI']) {
     }
   }
 
-  // STEP 4: Resolve teacher conflicts
   const teacherMap = {};
   for (let d of days) {
     for (let p of lessonSlots) {
